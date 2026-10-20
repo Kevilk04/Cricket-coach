@@ -6,7 +6,8 @@ import { backend, newId, type Innings } from '@/services/backend';
 import { useAuth } from '@/state/AuthContext';
 import { C, F, R, sp } from '@/theme';
 
-
+// One entry per ball: runs off the bat ("0" to "6"), "W" wicket, "Wd" wide, "Nb" no-ball.
+// A wide or a no-ball adds one run and has to be bowled again.
 const isLegal = (b: string) => b !== 'Wd' && b !== 'Nb';
 
 export function tally(log: string[]) {
@@ -27,7 +28,7 @@ export function tally(log: string[]) {
 
 const oversText = (balls: number) => `${Math.floor(balls / 6)}.${balls % 6}`;
 
-
+/** The balls of the over in progress. */
 function currentOver(log: string[]): string[] {
   let legal = 0;
   let start = 0;

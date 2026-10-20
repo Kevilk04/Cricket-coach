@@ -618,61 +618,6 @@ for skill, classes in SKILLS.items():
     plt.tight_layout(); plt.savefig(D('results', f'dataset_{skill}.png'), dpi=150); plt.show() if IN_COLAB else plt.close()
 
 # %% [markdown]
-# ## 7b. Phone position: is each view covered with correct AND fault clips?
-# The app can be used with the phone at the side or in front (where the bowler would be). For the
-# model to be as trustworthy in front as at the side, **both** views need correct **and** fault
-# clips, from the same people, at the distance the app is used from (the whole body in view,
-# filling most of the picture height). If one view has only correct clips, or only fault clips,
-# the model can learn "front view = correct" instead of the technique.
-#
-# The view in the file name (`_side_` or `_front_`) can be wrong: a clip without it gets
-# `DEFAULT_VIEW`. So each clip's view is also read from the picture: how wide the shoulders and
-# hips look, in trunk lengths (side-on to the phone below 0.42 = front; chest to the phone above
-# 0.55 = side; the same rule as the app, `viewFromPicture`). Clips where the two disagree are
-# listed: rename them (`p01_R_front_01.mp4`) and run section 6 again.
-
-# %%
-FRONT_SPREAD, SIDE_SPREAD = 0.42, 0.55
-
-def view_from_spread(s):
-    return 'front' if s < FRONT_SPREAD else 'side' if s > SIDE_SPREAD else 'unclear'
-
-per_clip = df_all.assign(spread=(df_all.pic_shoulder_spread + df_all.pic_hip_spread) / 2).groupby('clip').agg(
-    skill=('skill', 'first'), label=('label', 'first'), participant=('participant', 'first'),
-    view_in_name=('view', 'first'), spread=('spread', 'median'), frames=('t', 'size')).reset_index()
-per_clip['view_seen'] = per_clip.spread.map(view_from_spread)
-per_clip.to_csv(D('results', 'clips_by_view.csv'), index=False)
-
-wrong = per_clip[(per_clip.view_seen != 'unclear') & (per_clip.view_seen != per_clip.view_in_name)]
-print(f'{len(wrong)} of {len(per_clip)} clips look like the other view than their file name says:')
-if len(wrong):
-    print(wrong[['clip', 'view_in_name', 'view_seen', 'spread']].round(2).to_string(index=False))
-
-VIEW_TABLE = []
-for skill in SKILLS:
-    d = per_clip[per_clip.skill == skill]
-    if not len(d):
-        continue
-    t = pd.crosstab(d.view_seen, d.label).reindex(index=['side', 'front', 'unclear'], fill_value=0)
-    print(f'\n{skill}: clips by view (read from the picture) and class')
-    print(t.to_string())
-    for v in ('side', 'front'):
-        row = t.loc[v] if v in t.index else pd.Series(dtype=int)
-        n_correct = int(row.get(CORRECT, 0))
-        n_fault = int(row.sum() - n_correct)
-        people = d[d.view_seen == v].participant.nunique()
-        VIEW_TABLE.append({'skill': skill, 'view': v, 'correct_clips': n_correct, 'fault_clips': n_fault, 'participants': people})
-        if n_correct + n_fault == 0:
-            print(f'  {v}: no clips. The model has not seen this view: record correct and fault clips from here.')
-        elif n_correct == 0 or n_fault == 0:
-            print(f'  WARNING {v}: only {"fault" if n_correct == 0 else "correct"} clips. The model may learn the view, not the technique.')
-        else:
-            share = n_correct / (n_correct + n_fault)
-            print(f'  {v}: {n_correct} correct, {n_fault} fault ({share:.0%} correct), {people} participants')
-view_table = pd.DataFrame(VIEW_TABLE)
-view_table.to_csv(D('results', 'dataset_by_view.csv'), index=False)
-
-# %% [markdown]
 # ## 8. Training and person-wise cross-validation (Table 5.6)
 # Five models get the **same features** and the **same five folds**: Random Forest, MLP,
 # Logistic Regression, XGBoost and SVM. The SVM is compared only: it is not exported to the app
@@ -852,38 +797,6 @@ per_class.to_csv(D('results', 'per_class.csv'), index=False)
 mcnemar = pd.DataFrame(MCNEMAR)
 mcnemar.to_csv(D('results', 'mcnemar.csv'), index=False)
 print(mcnemar.to_string() if len(mcnemar) else 'no comparisons')
-
-# %% [markdown]
-# ## 9b. Results per phone position
-# The same person-wise cross-validation predictions as Table 5.6, split by the view each clip was
-# filmed from (read from the picture, section 7b). A view with few clips gives an unsure number;
-# a view with no correct or no fault clips cannot be scored (macro F1 needs both classes). This
-# shows whether the model can be trusted as much in front as at the side.
-
-# %%
-spread_by_clip = per_clip.set_index('clip').view_seen
-PER_VIEW = []
-for skill in SKILLS:
-    r = results[(results.skill == skill) & (~results.model.isin(NOT_FOR_APP))]
-    if not len(r):
-        continue
-    best = r.sort_values('macro_f1', ascending=False).iloc[0].model
-    d = df[df.skill == skill].reset_index(drop=True)
-    pred = OOF[(skill, best)]
-    views = d['clip'].map(spread_by_clip).fillna('unclear').values
-    for v in ('side', 'front', 'unclear'):
-        m = views == v
-        if not m.any():
-            continue
-        y_v, p_v = d.label.values[m], pred[m]
-        both = len(set(y_v)) >= 2
-        PER_VIEW.append({'skill': skill, 'model': best, 'view': v, 'frames': int(m.sum()), 'clips': int(d['clip'][m].nunique()),
-                         'participants': int(d.participant[m].nunique()), 'accuracy': accuracy_score(y_v, p_v),
-                         'macro_f1': f1_score(y_v, p_v, average='macro') if both else np.nan})
-per_view = pd.DataFrame(PER_VIEW)
-per_view.to_csv(D('results', 'results_by_view.csv'), index=False)
-print(per_view.round(3).to_string(index=False) if len(per_view) else 'no results')
-print('macro F1 is empty (NaN) where a view has only one class: record the missing class from that view.')
 
 # %% [markdown]
 # ## 10. Which features the Random Forest relies on (Figure 5.3)

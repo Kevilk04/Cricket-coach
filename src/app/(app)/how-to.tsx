@@ -48,7 +48,7 @@ const STEPS: { icon: IconName; title: string; text: string }[] = [
 
 const NEED = ['A bat. A stick about as long as your leg also works.', 'A clear space about 4 metres by 3 metres, with good light, away from people and windows.', 'Something to lean the phone on, such as a chair or a wall.', 'The sound turned up, and silent mode off, so you can hear the voice.'];
 
-
+/** A short guide to the app. Opens once after registering, and from the Practise tab and the profile. */
 export default function HowTo() {
   const [reading, setReading] = useState(false);
   useEffect(() => () => void Speech.stop(), []);

@@ -11,7 +11,9 @@ import { practiseRoute, taskRoute, useData, type SkillState } from '@/state/Data
 import { C, F, R, sp } from '@/theme';
 
 
-
+/**
+ * The Practise tab: today's plan, the weekly training plan, and every skill for extra practice.
+ */
 export default function Practice() {
   const { sessions, skills, programme, tasks } = useData();
   const { today, stageIndex, daysDone, todayDone, nextStageTomorrow, streak } = programme;
