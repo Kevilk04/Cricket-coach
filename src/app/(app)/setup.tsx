@@ -17,10 +17,10 @@ import { useProfile } from '@/state/AuthContext';
 import { useData } from '@/state/DataContext';
 import { C, F, sp } from '@/theme';
 
-/** Where to put the phone and where to stand, shown before every camera practice. */
+
 export default function Setup() {
   const params = useLocalSearchParams<{ skill: string; drill?: string }>();
-  // The grip is not practised with the camera, so it has no setup.
+
   const skill = (CAMERA_SKILLS as string[]).includes(params.skill) ? (params.skill as Skill) : null;
   const profile = useProfile();
   const hand = profile.battingHand;
