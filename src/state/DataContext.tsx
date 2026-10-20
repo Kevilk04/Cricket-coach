@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import { LESSONS, isUnlocked, nextLesson, passesQuiz, type Lesson } from '@/data/curriculum';
-import { DRILL_BY_ID, dayKey, EXTRA_SET, introducedIn, OPEN_FROM_START, programme as buildProgramme, repsByDay, taskKey, type DrillId, type Programme, type Task, type TaskKey } from '@/data/training';
+import { DRILL_BY_ID, dayKey, EXTRA_SET, introducedIn, OPEN_FROM_START, programme as buildProgramme, repsByDay, STANCE_FIRST_REPS, stanceRepsDone, taskKey, type DrillId, type Programme, type Task, type TaskKey } from '@/data/training';
 import { SKILL_NAME, SKILLS, type Skill } from '@/lib/pose/benchmarks';
 import { backend, newId, type PracticeSession, type QuizAttempt } from '@/services/backend';
 import { MUST_WATCH, MUST_WATCH_EVERY_DAY } from '@/data/videos';
@@ -24,8 +24,11 @@ export type SkillState = {
   remaining: number;
   /** How many to aim for in the next set: the rest of today's plan, or an extra set. */
   setSize: number;
-  /** True when the plan has reached this skill (or a coach has opened every step). */
+  /** True when the plan has reached this skill (or a coach has opened every step) and, for every
+   * skill but the stance, the stance has been done first (STANCE_FIRST_REPS good stances). */
   unlocked: boolean;
+  /** True when this skill is closed only because the stance has not been done yet. */
+  needsStance: boolean;
   /** True when today's plan for this skill is done (or it is not in today's plan). */
   doneToday: boolean;
   /** True once the demonstration has been watched to the end, and the coaching video if there is one. */
@@ -62,6 +65,8 @@ type DataState = {
   recordSession(session: Omit<PracticeSession, 'id' | 'at'>): PracticeSession;
   /** Progress on each skill of the practice path. */
   skills: Record<Skill, SkillState>;
+  /** Good stances held with the camera so far (the other practices open at STANCE_FIRST_REPS). */
+  stanceReps: number;
   /** Where the learner is in the training plan, today's plan and the history of each day. */
   programme: Programme;
   /** Today's tasks, in order. */
@@ -179,6 +184,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
   // Where the learner is in the training plan, worked out from the repetitions they have done.
   const plan = useMemo(() => buildProgramme(sessions), [sessions]);
 
+  // The stance must be done before any other camera practice opens (STANCE_FIRST_REPS).
+  const stanceReps = useMemo(() => stanceRepsDone(sessions), [sessions]);
+  const stanceDone = stanceReps >= STANCE_FIRST_REPS;
+
   const skills = useMemo(() => {
     const out = {} as Record<Skill, SkillState>;
     for (const skill of SKILLS) {
@@ -204,14 +213,15 @@ export function DataProvider({ children }: { children: ReactNode }) {
         target,
         remaining,
         setSize: remaining > 0 ? remaining : EXTRA_SET,
-        unlocked: reached || stepsOpen || OPEN_FROM_START.includes(skill),
+        unlocked: (reached || stepsOpen || OPEN_FROM_START.includes(skill)) && (skill === 'stance' || skill === 'grip' || stanceDone),
+        needsStance: skill !== 'stance' && skill !== 'grip' && !stanceDone,
         doneToday: remaining === 0,
         watched: watched.includes(skill) && videoSeen,
         videoSeen,
       };
     }
     return out;
-  }, [sessions, watched, stepsOpen, videos, plan]);
+  }, [sessions, watched, stepsOpen, videos, plan, stanceDone]);
 
   const taskToday = useCallback(
     (key: TaskKey) => {
@@ -245,6 +255,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       recordQuiz,
       recordSession,
       skills,
+      stanceReps,
       programme: plan,
       tasks,
       nextTask,
@@ -255,7 +266,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       setStepsOpen,
       saveError,
     }),
-    [ready, quizAttempts, sessions, passed, recordQuiz, recordSession, skills, plan, tasks, nextTask, taskToday, markWatched, markVideoSeen, stepsOpen, setStepsOpen, saveError],
+    [ready, quizAttempts, sessions, passed, recordQuiz, recordSession, skills, stanceReps, plan, tasks, nextTask, taskToday, markWatched, markVideoSeen, stepsOpen, setStepsOpen, saveError],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

@@ -1,12 +1,4 @@
-"""
-Builds Cricket_Coach_Training.ipynb from notebook_src.py and features.py.
 
-    python training/build_notebook.py
-
-notebook_src.py holds the cells ("# %%" starts a code cell, "# %% [markdown]" a text cell).
-The cell marked "# @@FEATURES@@" becomes a "%%writefile features.py" cell with the contents of
-features.py, so the notebook always carries the same feature code as the app.
-"""
 import json
 import os
 

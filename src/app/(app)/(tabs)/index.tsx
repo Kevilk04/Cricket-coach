@@ -19,10 +19,10 @@ export default function Home() {
   const { next, passed, skills, programme, tasks, nextTask, saveError } = useData();
   const firstName = profile.name.split(' ')[0];
   const { today, todayDone, streak, nextStageTomorrow, stageIndex } = programme;
-
+  // Where the button goes: the next unfinished task of today's plan.
   const target = nextTask ? taskRoute(nextTask, skills) : '/practice';
 
-
+  // Show the guide to the app once, the first time a learner arrives here.
   const uid = user?.uid;
   useEffect(() => {
     if (!uid) return;

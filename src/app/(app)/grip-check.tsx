@@ -12,10 +12,15 @@ import { askGripCoach, coachConfigured } from '@/services/coach';
 import { useAuth, useProfile } from '@/state/AuthContext';
 import { C, R, sp } from '@/theme';
 
-
+/** Photos are made this wide before they are sent, so they are small and quick to send. */
 const PHOTO_WIDTH = 1000;
 
-
+/**
+ * Grip check with a photo.
+ *
+ * The pose camera cannot see fingers, so it cannot tell a good grip from a bad one. Here the
+ * learner takes or picks one photo of their hands on the bat and the AI coach looks at it.
+ */
 export default function GripCheck() {
   const profile = useProfile();
   const { user } = useAuth();
@@ -64,7 +69,7 @@ export default function GripCheck() {
     try {
       const reply = await askGripCoach({ image: photo, hand, onText: setAnswer, signal: abort.current.signal });
       setOffline(reply.offline);
- 
+      // Keep the answer in the coach conversation. The photo itself is not saved.
       if (user && !reply.offline) {
         const at = Date.now();
         const mine: CoachMessage = { id: newId(), role: 'user', text: '[Grip photo] Please check my grip.', at };

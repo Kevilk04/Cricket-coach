@@ -7,7 +7,7 @@ import { DEMO_STEPS, stepForCheck } from '../src/data/skills';
 import { BAT_CHECKS, BENCHMARKS, GRIP_BENCHMARKS, PASS_SCORE } from '../src/lib/pose/benchmarks';
 import { buildStance, figureToWorld, idealDefence, idealDrive, idealStance, IN_STANCE, STANDING, worldToFigure } from '../src/lib/pose/idealStance';
 import { LM, sides, type Hand, type PoseFrame, type Vec3 } from '../src/lib/pose/landmarks';
-import { analyzePose, analyzeStance, SMOOTH_REF_MS, VIEW_SWITCH_MS, viewFromPicture, cameraProblem, chestOnInPicture, toesInPicture, facingPhone, handsFromBody, isGoodPosition, measureStance, scoreStance, StanceSmoother, strideLength } from '../src/lib/pose/stanceAnalyzer';
+import { analyzePose, analyzeStance, cameraProblem, chestOnInPicture, toesInPicture, facingPhone, handsFromBody, isGoodPosition, measureStance, scoreStance, StanceSmoother, strideLength } from '../src/lib/pose/stanceAnalyzer';
 import type { BatSeen } from '../src/lib/pose/batDetect';
 import { MODELS } from '../src/lib/pose/models';
 
@@ -507,129 +507,21 @@ for (const hand of ['right', 'left'] as Hand[]) {
   r = analyzePose('stance', noBat, hand, undefined, { requireBat: false });
   expect(`${hand}: without a bat, the same stance counts`, r.state === 'ok' && isGoodPosition(r), r.state === 'ok' ? `score ${r.score}` : r.state);
 
-  // Phone in front: only "feet in line" runs towards the phone, so it is a tip; a deep crouch
-  // (field test, 18 October 2026: scored 97 and counted) is read from the picture and does not count.
-  const front = (pose: Vec3[]): PoseFrame => {
-    const w = turned(figureToWorld(pose, hand), 90);
-    const lm: number[] = [];
-    for (let i = 0; i < 33; i++) lm.push(0.5 + (w[i * 3] * 0.38) / 0.75, 0.5 + w[i * 3 + 1] * 0.38, 0, 0.95);
-    return { t: 0, lm, world: w, aspect: 0.75, bat: RESTING_BAT };
-  };
-  r = analyzePose('stance', front(idealStance(hand)), hand, undefined, { view: 'front' });
-  const fl = r.state === 'ok' ? r.checks.find((c) => c.id === 'feetLine') : undefined;
-  const kn = r.state === 'ok' ? r.checks.find((c) => c.id === 'knees') : undefined;
-  const fw = r.state === 'ok' ? r.checks.find((c) => c.id === 'feet') : undefined;
-  const shc = r.state === 'ok' ? r.checks.find((c) => c.id === 'shoulders') : undefined;
-  expect(`${hand}: phone in front, the model stance's feet in line and knees are good`, r.state === 'ok' && fl?.status === 'good' && !fl.advisory && kn?.status === 'good', `feet in line ${fl?.value?.toFixed(2)} ${fl?.status}, knees ${kn?.value?.toFixed(0)} ${kn?.status}`);
-  expect(`${hand}: phone in front, feet width and shoulders (depth) are tips`, !!fw?.advisory && !!shc?.advisory);
-  expect(`${hand}: phone in front, the model stance counts`, r.state === 'ok' && isGoodPosition(r), r.state === 'ok' ? `score ${r.score}` : r.state);
-  // One foot a step ahead of the other, across the picture (towards the off side): feet in line is a fault.
-  const stepped = idealStance(hand).map((p) => [...p] as Vec3);
+  const narrow = idealStance(hand).map((p) => [...p] as Vec3);
   const sd = sides(hand);
-  for (const j of sd.frontAnkle === LM.L_ANKLE ? [LM.L_ANKLE, LM.L_HEEL, LM.L_TOE] : [LM.R_ANKLE, LM.R_HEEL, LM.R_TOE]) stepped[j][2] += 0.3 * (hand === 'right' ? 1 : -1); // figure Z points where the toes point
-  r = analyzePose('stance', front(stepped), hand, undefined, { view: 'front' });
-  const st = r.state === 'ok' ? r.checks.find((c) => c.id === 'feetLine') : undefined;
-  expect(`${hand}: phone in front, the front foot ahead of the back foot is found from the picture`, st?.status === 'poor' && (st.value ?? 0) > 0 && !isGoodPosition(r as never), `feet in line ${st?.value?.toFixed(2)} ${st?.status}`);
-  r = analyzePose('stance', front(buildStance(hand, { ...IN_STANCE, knees: 3.2 })), hand, undefined, { view: 'front' });
-  const deep = r.state === 'ok' ? r.checks.find((c) => c.id === 'knees') : undefined;
-  expect(`${hand}: phone in front, a deep crouch does not count`, r.state === 'ok' && !isGoodPosition(r) && deep?.status !== 'good', deep ? `knees ${deep.value?.toFixed(0)} ${deep.status}, score ${r.score}` : r.state);
-  r = analyzePose('stance', front(buildStance(hand, STANDING)), hand, undefined, { view: 'front' });
-  expect(`${hand}: phone in front, standing up straight does not count`, r.state === 'ok' && !isGoodPosition(r), r.state === 'ok' ? `score ${r.score}` : r.state);
-
-  // Field test, 19 October 2026: from the bowler's end the back leg is hidden behind the front leg
-  // (and the far shoulder and hip behind the near ones). One side seen is enough there.
-  const sdh = sides(hand);
-  const farSide = hand === 'right' ? [LM.R_SHOULDER, LM.R_HIP] : [LM.L_SHOULDER, LM.L_HIP];
-  const backLeg = [sdh.backKnee, sdh.backAnkle, sdh.backAnkle === LM.L_ANKLE ? LM.L_HEEL : LM.R_HEEL, sdh.backAnkle === LM.L_ANKLE ? LM.L_TOE : LM.R_TOE];
-  const hide = (f: PoseFrame, joints: number[]) => {
-    const lm = [...f.lm];
-    for (const j of joints) lm[j * 4 + 3] = 0.08;
-    return { ...f, lm };
-  };
-  const hidden = hide(front(idealStance(hand)), [...backLeg, ...farSide]);
-  r = analyzePose('stance', hidden, hand, undefined, { view: 'front' });
-  expect(`${hand}: phone in front, back leg and far side hidden: the stance is still judged and counts`, r.state === 'ok' && isGoodPosition(r), r.state === 'ok' ? `score ${r.score}` : `${r.state} ${(r as { missing?: string }).missing ?? ''}`);
-  const hk = r.state === 'ok' ? r.checks.find((c) => c.id === 'knees') : undefined;
-  const hl = r.state === 'ok' ? r.checks.find((c) => c.id === 'lean') : undefined;
-  expect(`${hand}: phone in front, back leg hidden: knees and lean read from the near side`, hk?.status === 'good' && hl?.status === 'good', `knees ${hk?.value?.toFixed(0)}, lean ${hl?.value?.toFixed(0)}`);
-  r = analyzePose('stance', hide(front(buildStance(hand, { ...IN_STANCE, knees: 3.2 })), [...backLeg, ...farSide]), hand, undefined, { view: 'front' });
-  expect(`${hand}: phone in front, back leg hidden: a deep crouch still does not count`, r.state === 'ok' && !isGoodPosition(r), r.state === 'ok' ? `score ${r.score}` : r.state);
-  r = analyzePose('stance', hide(front(buildStance(hand, STANDING)), [...backLeg, ...farSide]), hand, undefined, { view: 'front' });
-  expect(`${hand}: phone in front, back leg hidden: standing up straight still does not count`, r.state === 'ok' && !isGoodPosition(r), r.state === 'ok' ? `score ${r.score}` : r.state);
-  // At the side both legs are seen, so a hidden leg there still means "move so I can see you".
-  r = analyzePose('stance', hide(frameOf(idealStance(hand), hand), [sdh.backKnee]), hand, undefined, { view: 'side' });
-  expect(`${hand}: phone at the side, a hidden knee is still reported`, r.state === 'no-body');
-  const defFront = (() => {
-    const w = turned(figureToWorld(idealDefence(hand), hand), 90);
-    const lm: number[] = [];
-    for (let i = 0; i < 33; i++) lm.push(0.5 + (w[i * 3] * 0.38) / 0.75, 0.5 + w[i * 3 + 1] * 0.38, 0, 0.95);
-    return { t: 0, lm, world: w, aspect: 0.75, bat: null } as PoseFrame;
-  })();
-  r = analyzePose('defence', hide(defFront, [...backLeg, ...farSide]), hand, undefined, { view: 'front' });
-  const bl = r.state === 'ok' ? r.checks.find((c) => c.id === 'backLeg') : undefined;
-  expect(`${hand}: phone in front, defence with the back leg hidden is judged, back leg not judged`, r.state === 'ok' && (bl?.value ?? null) === null, r.state === 'ok' ? `back leg ${bl?.value ?? 'not judged'}` : r.state);
+  narrow[sd.frontAnkle][2] = narrow[sd.backAnkle][2] + 0.12;
+  narrow[sd.frontAnkle][0] = narrow[sd.backAnkle][0];
+  const w = turned(figureToWorld(narrow, hand), 90);
+  const lm: number[] = [];
+  for (let i = 0; i < 33; i++) lm.push(0.5 + (w[i * 3] * 0.38) / 0.75, 0.5 + w[i * 3 + 1] * 0.38, 0, 0.95);
+  r = analyzePose('stance', { t: 0, lm, world: w, aspect: 0.75, bat: RESTING_BAT }, hand, undefined, { view: 'front' });
+  const feet = r.state === 'ok' ? r.checks.find((c) => c.id === 'feet') : undefined;
+  expect(`${hand}: phone in front, the feet width is a tip, not a fault`, r.state === 'ok' && !!feet?.advisory, feet ? `feet ${feet.status}, advisory ${!!feet.advisory}` : r.state);
 
   const shot = frameOf(idealDefence(hand), hand, null);
   r = analyzePose('defence', shot, hand, undefined, { requireBat: true });
   const tilt = r.state === 'ok' ? r.checks.find((c) => c.id === 'batTilt') : undefined;
   expect(`${hand}: in a shot, a bat that is not seen is a tip that does not block`, r.state === 'ok' && !!tilt?.advisory && !!tilt.message?.includes('cannot see your bat') && !r.cues.some((c) => c.id === 'batTilt' && !c.advisory), tilt?.message ?? r.state);
-}
-
-
-// Field test, 19 October 2026 (phone at the bowler's end, 48 to 60 frames a second): the score
-// jumped from frame to frame and the view flipped between "front" and "side".
-{
-  // Smoothing lasts the same time at any frame rate.
-  const spike = (dt: number) => {
-    const sm = new StanceSmoother();
-    sm.tick(0);
-    sm.push({ knees: 150 });
-    sm.tick(dt);
-    return sm.push({ knees: 100 }).knees!;
-  };
-  const at15 = 150 - spike(SMOOTH_REF_MS);
-  const at60 = 150 - spike(1000 / 60);
-  expect('smoothing: at 15 frames a second a jump moves the value 35%', Math.abs(at15 - 17.5) < 0.5, at15.toFixed(1));
-  expect('smoothing: at 60 frames a second one frame moves it about a quarter as much', at60 > 3 && at60 < 6, at60.toFixed(1));
-  // Frames without a time keep the old per-frame smoothing.
-  const sm0 = new StanceSmoother();
-  sm0.push({ knees: 150 });
-  expect('smoothing: frames without a time smooth as before', Math.abs(sm0.push({ knees: 100 }).knees! - 132.5) < 1e-6);
-
-  // The view chosen in the set-up is kept until the picture shows the other one for a second.
-  const sm = new StanceSmoother();
-  let v = sm.settleView('front', 'side', 'side', 0);
-  expect('view: starts as the place chosen in the set-up', v === 'front');
-  v = sm.settleView('front', 'side', 'side', VIEW_SWITCH_MS - 50);
-  expect('view: a short turn does not change it', v === 'front');
-  v = sm.settleView('front', 'front', 'side', VIEW_SWITCH_MS);
-  v = sm.settleView('front', 'side', 'side', VIEW_SWITCH_MS + 100);
-  expect('view: the count starts again after the picture agrees', v === 'front');
-  v = sm.settleView('front', undefined, 'side', VIEW_SWITCH_MS + 200);
-  v = sm.settleView('front', 'side', 'side', 2 * VIEW_SWITCH_MS + 150);
-  expect('view: a second of the other view changes it', v === 'side');
-
-  // The picture tells the views apart by the width of the shoulders and hips.
-  for (const hand of ['right', 'left'] as Hand[]) {
-    const proj = (w: number[]) => {
-      const lm: number[] = [];
-      for (let i = 0; i < 33; i++) lm.push(0.5 + (w[i * 3] * 0.38) / 0.75, 0.5 + w[i * 3 + 1] * 0.38, 0, 0.95);
-      return lm;
-    };
-    const world = figureToWorld(idealStance(hand), hand);
-    expect(`${hand}: view from the picture: chest to the phone is "side"`, viewFromPicture(proj(world), 0.75) === 'side');
-    expect(`${hand}: view from the picture: side-on to the phone is "front"`, viewFromPicture(proj(turned(world, 90)), 0.75) === 'front');
-    // A stance judged with the phone at the bowler's end stays judged from there while the
-    // body's depth flickers (the old per-frame detectView would have switched).
-    const smv = new StanceSmoother();
-    let views = new Set<string>();
-    for (let k = 0; k < 30; k++) {
-      const w = turned(world, k % 2 ? 90 : 40); // depth estimate swinging from frame to frame
-      const r = analyzePose('defence', { t: k * 20, lm: proj(turned(world, 90)), world: w, aspect: 0.75, bat: RESTING_BAT }, hand, smv, { view: 'front' });
-      if (r.state === 'ok' && r.view) views.add(r.view);
-    }
-    expect(`${hand}: a flickering depth estimate does not change the view`, views.size === 1 && views.has('front'), [...views].join(','));
-  }
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nAll checks passed');

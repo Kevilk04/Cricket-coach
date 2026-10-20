@@ -24,13 +24,13 @@ import { useProfile } from '@/state/AuthContext';
 import { useData } from '@/state/DataContext';
 import { C, F, R, sp } from '@/theme';
 
-
+// The video player is only loaded when a filmed demonstration has been added.
 const DemoVideo = lazy(() => import('@/components/DemoVideo'));
 
 const FIGURE_HEIGHT = 330;
-const WATCH_STEP_MS = 1150; 
-const MOVE_MS = 900; 
-const PAUSE_MS = 500; 
+const WATCH_STEP_MS = 1150; // how long each part of the movement is shown in the silent run-through
+const MOVE_MS = 900; // how long the figure takes to move between two steps
+const PAUSE_MS = 500; // gap between two spoken steps
 
 type Mode = 'watch' | 'explain';
 
@@ -61,7 +61,9 @@ export default function Demo() {
   const step = steps[index];
   const t = (text: string) => personalise(text, hand);
   const info = skill ? SKILL_INFO[skill] : null;
-  const open = skill ? skills[skill].unlocked : false;
+  // Watching is learning, not practice: a shot can be watched before the stance is done (the
+  // practice itself stays closed until then).
+  const open = skill ? skills[skill].unlocked || skills[skill].needsStance : false;
 
   // 1. Watch: the whole movement, once, without the explanation.
   useEffect(() => {
@@ -338,13 +340,14 @@ function useTween<T extends Record<string, number>>(target: T, targetYaw: number
   return now;
 }
 
-
+/** The 3D batter, moving smoothly from one step of the stance to the next. */
 function StanceDemo({ hand, progress, view, highlight, bat, kneeAngles }: { hand: Hand; progress: StanceProgress; view: FigureView; highlight?: number[]; bat: boolean; kneeAngles?: boolean }) {
   const now = useTween(progress, viewYaw(hand, view));
   const pose = buildStance(hand, now.p);
-
+  // The bat appears once the hands have reached it.
   const holding = bat && now.p.hands > 0.97;
-
+  // The angle at the knees, so the learner sees the bend grow from straight (180°).
+  // Both knees bend the same way; seen from the side they overlap, so one label is shown.
   const knee = hand === 'right' ? LM.L_KNEE : LM.R_KNEE;
   const hip = hand === 'right' ? LM.L_HIP : LM.R_HIP;
   const ankle = hand === 'right' ? LM.L_ANKLE : LM.R_ANKLE;

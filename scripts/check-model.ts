@@ -24,7 +24,7 @@ import { buildStance, figureToWorld, idealStance, STANDING } from '../src/lib/po
 import type { Hand, PoseFrame, Vec3 } from '../src/lib/pose/landmarks';
 import { LM } from '../src/lib/pose/landmarks';
 import { BENCHMARKS_BY_SKILL, type Skill } from '../src/lib/pose/benchmarks';
-import { analyzePose, isGoodPosition, judgeWithModel, MODEL_FRONT_VETO, MODEL_KEEP_MARGIN, scoreStance } from '../src/lib/pose/stanceAnalyzer';
+import { analyzePose, isGoodPosition } from '../src/lib/pose/stanceAnalyzer';
 
 let failed = 0;
 function expect(name: string, ok: boolean, detail = '') {
@@ -182,32 +182,6 @@ for (const file of files) {
       expect(`${model.skill}: fault "${c}" is explained by a check of this skill`, checks.includes(link.check), `${link.check} in ${checks.join(', ')}`);
     }
   }
-}
-
-
-// Field test, 19 October 2026: with a probability near the model's threshold, the verdict
-// flipped many times a second. A position the model accepted stays accepted until the
-// probability falls MODEL_KEEP_MARGIN below the threshold.
-{
-  const model = { format: 'cricket-coach-model', feature_version: 1, skill: 'stance', classes: ['correct', 'fault'], correct_class: 'correct', good_prob: 0.6, faults: {} } as unknown as PositionModel;
-  const rules = scoreStance({ feet: 1.2, knees: 150, lean: 20, shoulders: 3, hands: 0.3 });
-  const at = (p: number) => ({ label: p >= 0.5 ? 'correct' : 'fault', index: p >= 0.5 ? 0 : 1, probs: [p, 1 - p], pCorrect: p });
-  const fresh = judgeWithModel(rules, BENCHMARKS_BY_SKILL.stance, model, at(0.55), 'right', false);
-  const kept = judgeWithModel(rules, BENCHMARKS_BY_SKILL.stance, model, at(0.55), 'right', true);
-  const lost = judgeWithModel(rules, BENCHMARKS_BY_SKILL.stance, model, at(0.6 - MODEL_KEEP_MARGIN - 0.02), 'right', true);
-  expect('model: 0.55 is not accepted on its own (threshold 0.6)', !fresh.modelAccepted && !isGoodPosition(fresh), `score ${fresh.score}`);
-  expect('model: 0.55 keeps a position that was accepted', kept.modelAccepted && isGoodPosition(kept), `score ${kept.score}`);
-  expect('model: below the margin, the position is no longer accepted', !lost.modelAccepted && !isGoodPosition(lost), `score ${lost.score}`);
-  // Phone at the bowler's end: an unsure "fault" does not overrule rules that accept; a confident one does.
-  const side = judgeWithModel(rules, BENCHMARKS_BY_SKILL.stance, model, at(0.45), 'right', false);
-  const frontUnsure = judgeWithModel(rules, BENCHMARKS_BY_SKILL.stance, model, at(0.45), 'right', false, MODEL_FRONT_VETO);
-  const frontSure = judgeWithModel(rules, BENCHMARKS_BY_SKILL.stance, model, at(MODEL_FRONT_VETO - 0.1), 'right', false, MODEL_FRONT_VETO);
-  const badRules = scoreStance({ feet: 1.2, knees: 100, lean: 20, shoulders: 3, hands: 0.3 });
-  const frontBadRules = judgeWithModel(badRules, BENCHMARKS_BY_SKILL.stance, model, at(0.45), 'right', false, MODEL_FRONT_VETO);
-  expect('model, side: an unsure fault (0.45) does not count', !isGoodPosition(side), `score ${side.score}`);
-  expect('model, front: an unsure fault (0.45) with good rules counts, scored by the rules', isGoodPosition(frontUnsure) && frontUnsure.score === rules.score && !!frontUnsure.model?.unsure, `score ${frontUnsure.score}`);
-  expect('model, front: a confident fault still does not count', !isGoodPosition(frontSure), `score ${frontSure.score}`);
-  expect('model, front: an unsure model does not rescue a position the rules reject', !isGoodPosition(frontBadRules), `score ${frontBadRules.score}`);
 }
 
 console.log(failed ? `\n${failed} check(s) failed` : '\nAll checks passed');

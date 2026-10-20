@@ -55,10 +55,11 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "evaluate": "tsx scripts/evaluate.ts",
-    "test:pose": "tsx scripts/check-analyzer.ts && tsx scripts/check-training.ts && tsx scripts/check-shots.ts && tsx scripts/check-bat.ts && tsx scripts/check-model.ts",
+    "test:pose": "tsx scripts/check-analyzer.ts && tsx scripts/check-training.ts && tsx scripts/check-shots.ts && tsx scripts/check-bat.ts && tsx scripts/check-model.ts && tsx scripts/check-steady.ts && tsx scripts/check-content.ts",
     "server": "node server/server.js",
     "lint": "expo lint",
-    "test:model": "tsx scripts/check-model.ts"
+    "test:model": "tsx scripts/check-model.ts",
+    "replay": "tsx scripts/replay.ts"
   },
   "private": true
 }

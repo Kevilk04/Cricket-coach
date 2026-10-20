@@ -118,6 +118,20 @@ export type DayPlan = {
  */
 export const OPEN_FROM_START: Skill[] = ['defence', 'drive', 'backdefence', 'pull', 'cut', 'sweep'];
 
+/**
+ * The stance comes first. No other camera practice opens until the learner has held this many
+ * good stances with the camera (the first day of the stance plan). Every shot starts from the
+ * stance, so a shot practised from a poor stance builds the wrong habit.
+ */
+export const STANCE_FIRST_REPS = 10;
+
+/** Good stances held with the camera so far, over all days. */
+export function stanceRepsDone(sessions: PracticeSession[]): number {
+  let n = 0;
+  for (const s of sessions) if ((s.kind ?? 'stance') === 'stance' && !s.drill) n += (s.reps ?? []).length;
+  return n;
+}
+
 export const DAYS_PER_STAGE = 5;
 /** Repetitions on day 1 of a stage; each later day adds the same again (10, 20, 30, 40, 50). */
 export const REPS_PER_DAY_STEP = 10;

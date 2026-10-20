@@ -38,6 +38,9 @@ import { C, F, R, sp, statusIcon } from '@/theme';
 // Timing of the live feedback. Everything here happens on the phone, with no network call.
 const UI_EVERY_MS = 150; // how often the numbers on screen refresh
 const CUE_SETTLE_MS = 350; // a fault must last this long before it is shown or spoken
+// A held good position is not lost to a not-good blip shorter than this (field test, 19 October
+// 2026: one shaky frame reset the hold bar again and again).
+const HOLD_GRACE_MS = 400;
 const SPEAK_GAP_MS = 3500; // shortest gap between two spoken cues (the voice is slow, so leave room)
 const REPEAT_CUE_MS = 9000; // the same cue is repeated after this long
 /** Shown when a position is not good and no single check says why. */
@@ -45,8 +48,6 @@ const NOT_YET_CUE: CheckResult = { id: 'feet', label: '', value: null, score: 0,
 const HOLD_SCORE = 85; // a position at or above this score, with no part marked "fix this", counts as good
 const SHOT_HOLD_MS = 2000; // shots: hold the finished shot this long
 const LOST_MS = 700; // the body must be lost for this long before the screen says so
-
-const HOLD_GRACE_MS = 400;
 const PROBLEM_SETTLE_MS = 1500; // a camera problem must last this long before it is spoken
 const PROBLEM_REPEAT_MS = 9000; // and is repeated after this long
 // Holding the bat the other way round (as a left-hander when set up as right-handed, or the reverse).
@@ -54,7 +55,9 @@ const SIDE_EMA = 0.12; // how quickly the guess follows each frame
 const WRONG_SIDE_AT = -0.45; // below this (for the learner's own hand) the bat is held the other way round
 const WRONG_SIDE_MS = 1800; // for this long before it is said
 const WRONG_SIDE_REPEAT_MS = 10000;
-
+// Light: when the picture is too dark the app turns on a light by itself (the torch on the back
+// camera; the screen as a light on the front camera) and says so. If it is still too dark after a
+// while, it asks for a room light.
 const DARK_SETTLE_MS = 1500; // dark for this long before the light is turned on
 const STILL_DARK_MS = 6000; // still dark this long after the light came on: ask for a room light
 const STILL_DARK_REPEAT_MS = 20000;
@@ -66,10 +69,21 @@ type LiveView =
   | { kind: 'wrong-angle'; problem: CameraProblem }
   | { kind: 'ok'; score: number; checks: CheckResult[]; cue: CheckResult | null; second: CheckResult | null };
 
-
+/**
+ * Where the learner is in one repetition.
+ *   hold   grip or stance: get into position and hold it
+ *   relax  grip or stance: come out of position before the next one
+ *   gate   shots: a good stance first
+ *   shot   shots: play the shot and hold it
+ */
 type Phase = 'hold' | 'relax' | 'gate' | 'shot';
 
-
+/**
+ * The camera practice for one skill or one step of a skill
+ * (`/live?skill=stance|defence|drive&drill=def-footwork&view=front|side`).
+ * It counts good repetitions towards today's plan. Each camera frame is judged on the phone and
+ * the correction is shown and spoken at once.
+ */
 export default function Live() {
   const params = useLocalSearchParams<{ skill: string; drill?: string; view?: string; bat?: string }>();
   const valid = (CAMERA_SKILLS as string[]).includes(params.skill);
@@ -182,7 +196,6 @@ export default function Live() {
       if ((next === 'hold' || next === 'gate') && !live.recording) startRecording();
       live.phase = next;
       live.goodSince = 0;
-      live.badSince = 0;
       live.relaxSince = 0;
       live.gateTime = 0;
       live.shownCue = '';
@@ -269,10 +282,11 @@ export default function Live() {
     [finish, info.relax, isShot, live, say, setPhase, target],
   );
 
-
+  // The camera cannot judge the learner yet: a part of the body is out of view, or the phone
+  // is in the wrong place. Shown after a short wait so one bad frame does not flash a message.
   const blocked = useCallback(
     (now: number, key: string, next: LiveView, spoken: string | null) => {
-      if (now - live.lastBody > HOLD_GRACE_MS) live.goodSince = 0;
+      live.goodSince = 0;
       if (key !== live.problem) {
         live.problem = key;
         live.problemSince = now;
@@ -332,9 +346,10 @@ export default function Live() {
       live.latest = analysis;
       live.world = frame.world;
 
-
+      // 0. Is the bat held the other way round? Beginners often stand as a left-hander when they
+      // bat right-handed, or the reverse. Not checked while relaxing.
       if (live.phase !== 'relax') {
-        const vote = standingSide(frame.world, frame.lm, analysis.view ?? detectView(frame.world)) * (hand === 'right' ? 1 : -1);
+        const vote = standingSide(frame.world, frame.lm, detectView(frame.world)) * (hand === 'right' ? 1 : -1);
         live.side += SIDE_EMA * (vote - live.side);
         if (live.side < WRONG_SIDE_AT) {
           live.rightSince = 0;
@@ -434,15 +449,13 @@ export default function Live() {
           }
           return;
         }
-      } else if (live.goodSince) {
-        // A moment of doubt keeps the hold (but does not finish it); a fault that lasts ends it.
+      } else if (live.goodSince && (live.badSince === 0 || now - live.badSince < HOLD_GRACE_MS)) {
+        // A short blip: keep the hold (the bar stops for a moment) unless it lasts.
         if (!live.badSince) live.badSince = now;
-        if (now - live.badSince > HOLD_GRACE_MS) {
-          live.goodSince = 0;
-          live.badSince = 0;
-        } else {
-          progress = Math.min(0.99, (now - live.goodSince) / holdFor);
-        }
+        progress = Math.min(1, (live.badSince - live.goodSince) / holdFor);
+      } else {
+        live.goodSince = 0;
+        live.badSince = 0;
       }
 
       // 6. Shots: a stance that does not come right in time is a failed stance check.
@@ -464,7 +477,10 @@ export default function Live() {
       // 7. Screen: refresh a few times a second.
       if (now - live.lastUi >= UI_EVERY_MS) {
         live.lastUi = now;
-       
+        // "Good. Hold it." is shown only for a position that really is good. While a new fault is
+        // still settling, or when the position is not good for a reason no single check explains
+        // (field test, 18 October 2026: "Good stance. Hold it." beside a score of 15), the current
+        // worst fault, or a general message, is shown instead.
         const notGood = analysis.score < HOLD_SCORE || analysis.cues.some(blocks);
         const shown = cue ?? (notGood ? analysis.cues[0] ?? NOT_YET_CUE : null);
         const second = analysis.cues.find((c) => c.id !== shown?.id) ?? null;

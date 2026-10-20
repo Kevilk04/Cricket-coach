@@ -4,14 +4,17 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Button, Card, H1, H3, Screen, Seam, Small, StatusPill } from '@/components/ui';
 import { SKILL_INFO } from '@/data/skills';
-import { DAYS_PER_STAGE, dayPlan, DRILLS, KEEP_SHARP_REPS, planLine, STAGE_COUNT, type DayPlan } from '@/data/training';
+import { DAYS_PER_STAGE, dayPlan, DRILLS, KEEP_SHARP_REPS, planLine, STAGE_COUNT, STANCE_FIRST_REPS, type DayPlan } from '@/data/training';
 import { CAMERA_SKILLS } from '@/lib/pose/benchmarks';
 import { statusForScore } from '@/lib/pose/stanceAnalyzer';
+import { StanceFirst } from '@/components/StanceFirst';
 import { practiseRoute, taskRoute, useData, type SkillState } from '@/state/DataContext';
 import { C, F, R, sp } from '@/theme';
 
 
-
+/**
+ * The Practise tab: today's plan, the weekly training plan, and every skill for extra practice.
+ */
 export default function Practice() {
   const { sessions, skills, programme, tasks } = useData();
   const { today, stageIndex, daysDone, todayDone, nextStageTomorrow, streak } = programme;
@@ -102,6 +105,12 @@ export default function Practice() {
           <Button title="Photo check" icon="camera" kind="secondary" onPress={() => router.push('/grip-check')} style={{ flex: 1 }} />
         </View>
       </Card>
+      {CAMERA_SKILLS.some((k) => skills[k].needsStance) ? (
+        <Card style={{ borderColor: C.ball, borderWidth: 2 }}>
+          <H3>The stance comes first</H3>
+          <StanceFirst />
+        </Card>
+      ) : null}
       {CAMERA_SKILLS.map((k) => (
         <SkillCard key={k} state={skills[k]} />
       ))}
@@ -199,7 +208,7 @@ function SkillCard({ state }: { state: SkillState }) {
         <Text style={styles.whyText}>{info.why}</Text>
       </View>
       {!state.unlocked ? (
-        <Small>Opens when your training plan reaches it.</Small>
+        <Small>{state.needsStance ? `Opens after your first ${STANCE_FIRST_REPS} good stances.` : 'Opens when your training plan reaches it.'}</Small>
       ) : (
         <View style={{ flexDirection: 'row', gap: sp(2) }}>
           <Button title={state.watched ? 'Watch again' : 'Watch and learn'} icon="play" kind={state.watched ? 'ghost' : 'primary'} onPress={() => router.push(`/demo/${state.skill}`)} style={{ flex: 1 }} />

@@ -78,9 +78,7 @@ export type PoseAnalysis =
        * The trained model's verdict, when the skill has a trained model. It decides whether the
        * position is good; the rule checks then only say what to change.
        */
-      model?: ModelPrediction & { classes: string[]; unsure?: true };
-      /** The camera view the frame was judged with. */
-      view?: CameraView;
+      model?: ModelPrediction & { classes: string[]; good?: boolean; front?: boolean };
     };
 /** Kept for older code: the stance analysis is one kind of pose analysis. */
 export type StanceAnalysis = PoseAnalysis;
@@ -100,9 +98,6 @@ function inFrame(lm: number[], j: number): boolean {
   const y = lm[j * 4 + 1];
   return x > 0.01 && x < 0.99 && y > 0.01 && y < 0.965;
 }
-
-/** Parts with a left and a right joint, of which the far one may be hidden when the batter is side-on to the phone. */
-const FAR_SIDE_PARTS: BodyPart[] = ['shoulders', 'hips', 'knees', 'feet'];
 
 export function missingPart(lm: number[], skill: Skill, view: CameraView = 'side'): BodyPart | null {
   for (const { part, joints } of REQUIRED_PARTS[skill]) {
@@ -124,14 +119,6 @@ export function missingPart(lm: number[], skill: Skill, view: CameraView = 'side
     }
     // One hand clearly seen is enough: the other is often hidden behind the bat or the body.
     if (part === 'hands' && skill !== 'grip') {
-      if (best < MIN_VISIBILITY) return part;
-      continue;
-    }
-    // Phone at the bowler's end: the batter is side-on, so the far leg, hip and shoulder are
-    // behind the near ones (field test, 19 October 2026: the back leg was hidden behind the front
-    // leg, and the front view did not work). One side clearly seen is enough there; the checks
-    // that need the far side are not judged when it is hidden.
-    if (view === 'front' && FAR_SIDE_PARTS.includes(part)) {
       if (best < MIN_VISIBILITY) return part;
       continue;
     }
@@ -212,10 +199,7 @@ export function measureStance(world: number[], hand: Hand, lm?: number[], view: 
   m.feet = dist(ankL, ankR) / shoulderWidth;
 
   // Feet in line: neither foot ahead of the other, toes pointing the same way, to the side.
-  // From the bowler's end the toes point across the picture, so it is read from the picture there.
-  // (When the picture cannot be read, the world landmarks are used: the toes and the step between
-  // the feet lie mostly across the picture there too.)
-  const line = (view === 'front' ? feetInLinePicture(lm, hand, aspect) : undefined) ?? feetInLine(world, hand, lm);
+  const line = feetInLine(world, hand, lm);
   if (line !== undefined) m.feetLine = line;
 
   // Knees: average knee angle. 180 degrees is a straight leg.
@@ -224,16 +208,6 @@ export function measureStance(world: number[], hand: Hand, lm?: number[], view: 
   // Lean: angle of the trunk away from vertical.
   const up: Vec3 = [0, -1, 0];
   m.lean = angleBetween(sub(shoulderMid, hipMid), up);
-
-  // With the phone in front (where the bowler would be) the batter is side-on to it, so the knee
-  // bend and the lean lie across the picture, where the picture is exact, whereas the 3D estimate
-  // is poor (field test, 18 October 2026: a deep crouch from the front scored 97 and counted).
-  // There they are read from the picture.
-  if (view === 'front' && lm) {
-    const flat = pictureKneesAndLean(lm, aspect);
-    if (flat.knees !== undefined) m.knees = flat.knees;
-    if (flat.lean !== undefined) m.lean = flat.lean;
-  }
 
   // Shoulders: tilt of the shoulder line away from horizontal.
   const sh = sub(shL, shR);
@@ -258,72 +232,21 @@ export function measureStance(world: number[], hand: Hand, lm?: number[], view: 
   // In the stance both hands are low on the handle, so the higher hand is what is judged. Only
   // a hand that is clearly seen counts (a hidden hand is a guess).
   const drop = kneeMid[1] - hipMid[1];
-  const handsSeen = [LM.L_WRIST, LM.R_WRIST].filter((j) => !lm || visibility(lm, j) >= 0.5);
+  // Phone in front: the hands are often behind the body or the bat, and the pose model then
+  // guesses where they are with a middling visibility (field test, 19 October 2026: "Lower your
+  // hands" and "Your hands and bat are too high" for hands it could not see). From the front only
+  // hands seen clearly (visibility 0.65 or more) are judged.
+  const handVis = view === 'front' ? FRONT_HAND_VIS : 0.5;
+  const handsSeen = [LM.L_WRIST, LM.R_WRIST].filter((j) => !lm || visibility(lm, j) >= handVis);
   if (handsSeen.length && Math.abs(drop) > 0.05) {
     const top = Math.min(...handsSeen.map((j) => p(j)[1])); // y points down
     m.hands = (top - hipMid[1]) / drop;
   }
 
-  const handsIn = handsFromBody(lm, aspect);
+  const handsIn = handsFromBody(lm, aspect, view === 'front' ? FRONT_HAND_VIS : 0.3);
   if (handsIn !== undefined) m.handsIn = handsIn;
 
   return m;
-}
-
-/**
- * The middle of the shoulders and of the hips in the picture (x scaled by the aspect ratio).
- * Seen side-on, the far shoulder and hip are often hidden: then the near ones are used alone,
- * which for a side-on body is nearly the same point. Undefined when neither shoulder or neither
- * hip is seen.
- */
-export function trunkInPicture(lm: number[], aspect?: number | null, min = 0.5): { sh: [number, number]; hip: [number, number]; trunk: number } | undefined {
-  const ar = aspect && aspect > 0 ? aspect : 0.75;
-  const pt = (j: number): [number, number] => [lm[j * 4] * ar, lm[j * 4 + 1]];
-  const middle = (a: number, b: number): [number, number] | undefined => {
-    const okA = visibility(lm, a) >= min, okB = visibility(lm, b) >= min;
-    if (okA && okB) return [(pt(a)[0] + pt(b)[0]) / 2, (pt(a)[1] + pt(b)[1]) / 2];
-    if (okA || okB) return pt(okA ? a : b);
-    return undefined;
-  };
-  const sh = middle(LM.L_SHOULDER, LM.R_SHOULDER);
-  const hip = middle(LM.L_HIP, LM.R_HIP);
-  if (!sh || !hip) return undefined;
-  return { sh, hip, trunk: Math.hypot(sh[0] - hip[0], sh[1] - hip[1]) };
-}
-
-/**
- * Knee angle and trunk lean read from the picture (degrees), for a body seen side-on, as it is by
- * a phone at the bowler's end. Each knee is used only when its hip, knee and ankle are clearly
- * seen; with both seen, the more bent one is used, so a deep crouch is not averaged away by a
- * leg the pose model has placed badly.
- */
-export function pictureKneesAndLean(lm: number[], aspect?: number | null): { knees?: number; lean?: number } {
-  const ar = aspect && aspect > 0 ? aspect : 0.75;
-  const pt = (j: number): [number, number] => [lm[j * 4] * ar, lm[j * 4 + 1]];
-  const ok = (j: number) => visibility(lm, j) >= 0.5;
-  const angle2 = (a: number, b: number, c: number) => {
-    const [ax, ay] = pt(a), [bx, by] = pt(b), [cx, cy] = pt(c);
-    const u = [ax - bx, ay - by], v = [cx - bx, cy - by];
-    const nu = Math.hypot(u[0], u[1]), nv = Math.hypot(v[0], v[1]);
-    if (nu < 1e-4 || nv < 1e-4) return undefined;
-    return (Math.acos(Math.max(-1, Math.min(1, (u[0] * v[0] + u[1] * v[1]) / (nu * nv)))) * 180) / Math.PI;
-  };
-  const out: { knees?: number; lean?: number } = {};
-  const knees: number[] = [];
-  for (const [h, k, a] of [[LM.L_HIP, LM.L_KNEE, LM.L_ANKLE], [LM.R_HIP, LM.R_KNEE, LM.R_ANKLE]]) {
-    if (ok(h) && ok(k) && ok(a)) {
-      const v = angle2(h, k, a);
-      if (v !== undefined) knees.push(v);
-    }
-  }
-  if (knees.length) out.knees = Math.min(...knees);
-  // The far shoulder and hip may be hidden: the near ones are then used (trunkInPicture).
-  const t = trunkInPicture(lm, aspect);
-  if (t && t.trunk > 1e-4) {
-    const dx = t.sh[0] - t.hip[0], dy = t.sh[1] - t.hip[1];
-    out.lean = (Math.acos(Math.max(-1, Math.min(1, -dy / t.trunk))) * 180) / Math.PI;
-  }
-  return out;
 }
 
 /**
@@ -334,24 +257,25 @@ export function pictureKneesAndLean(lm: number[], aspect?: number | null): { kne
  * distances there are exact, while depth is the least exact thing the pose model gives.
  * Undefined when the hands or the trunk are not seen well enough.
  */
-export function handsFromBody(lm: number[] | undefined, aspect?: number | null): number | undefined {
+export const FRONT_HAND_VIS = 0.65;
+
+export function handsFromBody(lm: number[] | undefined, aspect?: number | null, minVis = 0.3): number | undefined {
   if (!lm) return undefined;
   const ar = aspect && aspect > 0 ? aspect : 0.75;
-  const seen = (j: number) => visibility(lm, j) >= 0.3;
-  // The far shoulder and hip may be hidden (batter side-on to the phone): the near ones are used.
-  const t = trunkInPicture(lm, aspect);
-  if (!t) return undefined;
+  const seen = (j: number) => visibility(lm, j) >= minVis;
+  if (![LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP].every((j) => visibility(lm, j) >= 0.5)) return undefined;
   const hands = [LM.L_WRIST, LM.R_WRIST, LM.L_INDEX, LM.R_INDEX].filter(seen);
   if (hands.length < 2) return undefined;
   const x = (j: number) => lm[j * 4] * ar;
-  const hipX = t.hip[0];
-  const trunk = t.trunk;
+  const y = (j: number) => lm[j * 4 + 1];
+  const hipX = (x(LM.L_HIP) + x(LM.R_HIP)) / 2;
+  const trunk = Math.hypot((x(LM.L_SHOULDER) + x(LM.R_SHOULDER)) / 2 - hipX, (y(LM.L_SHOULDER) + y(LM.R_SHOULDER)) / 2 - (y(LM.L_HIP) + y(LM.R_HIP)) / 2);
   if (trunk < 0.03) return undefined;
   const handX = hands.reduce((t, j) => t + x(j), 0) / hands.length;
   // Field test (12 October 2026): a good stance leaning forward has the arms hanging down from the
   // shoulders, so the hands are under the shoulders but ahead of the hips. Hands pushed out (bat
   // up in the air) are far from both. The smaller distance is used.
-  const shX = t.sh[0];
+  const shX = (x(LM.L_SHOULDER) + x(LM.R_SHOULDER)) / 2;
   return Math.min(Math.abs(handX - hipX), Math.abs(handX - shX)) / trunk;
 }
 
@@ -375,12 +299,12 @@ export const CHEST_ON_SPREAD = 0.38;
  */
 export function toesInPicture(lm: number[] | undefined, aspect?: number | null): number | undefined {
   if (!lm) return undefined;
+  if (![LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP].every((j) => visibility(lm, j) >= 0.5)) return undefined;
   const ar = aspect && aspect > 0 ? aspect : 0.75;
   const pt = (j: number): [number, number] => [lm[j * 4] * ar, lm[j * 4 + 1]];
-  // The far shoulder and hip may be hidden (side-on): the near ones are used.
-  const t = trunkInPicture(lm, aspect);
-  if (!t) return undefined;
-  const trunk = t.trunk;
+  const sh = pt(LM.L_SHOULDER).map((v, i) => (v + pt(LM.R_SHOULDER)[i]) / 2);
+  const hip = pt(LM.L_HIP).map((v, i) => (v + pt(LM.R_HIP)[i]) / 2);
+  const trunk = Math.hypot(sh[0] - hip[0], sh[1] - hip[1]);
   if (trunk < 0.03) return undefined;
   let worst: number | undefined;
   for (const [heel, toe] of [[LM.L_HEEL, LM.L_TOE], [LM.R_HEEL, LM.R_TOE]]) {
@@ -403,67 +327,6 @@ export function chestOnInPicture(lm: number[] | undefined, aspect?: number | nul
   const trunk = Math.hypot(sh[0] - hip[0], sh[1] - hip[1]);
   if (trunk < 0.03) return false;
   return (d(LM.L_SHOULDER, LM.R_SHOULDER) + d(LM.L_HIP, LM.R_HIP)) / 2 / trunk > CHEST_ON_SPREAD;
-}
-
-/**
- * How wide the shoulders and hips look in the picture (averaged, in trunk lengths). A body seen
- * side-on (phone at the bowler's end) reads about 0.1 to 0.35; a body whose chest faces the phone
- * (phone at the side) reads 0.6 or more. Undefined when the trunk is not clearly seen.
- */
-export function pictureSpread(lm: number[] | undefined, aspect?: number | null): number | undefined {
-  if (!lm) return undefined;
-  if (![LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP].every((j) => visibility(lm, j) >= 0.6)) return undefined;
-  const ar = aspect && aspect > 0 ? aspect : 0.75;
-  const pt = (j: number): [number, number] => [lm[j * 4] * ar, lm[j * 4 + 1]];
-  const d = (a: number, b: number) => Math.hypot(pt(a)[0] - pt(b)[0], pt(a)[1] - pt(b)[1]);
-  const sh = pt(LM.L_SHOULDER).map((v, i) => (v + pt(LM.R_SHOULDER)[i]) / 2);
-  const hip = pt(LM.L_HIP).map((v, i) => (v + pt(LM.R_HIP)[i]) / 2);
-  const trunk = Math.hypot(sh[0] - hip[0], sh[1] - hip[1]);
-  if (trunk < 0.03) return undefined;
-  return (d(LM.L_SHOULDER, LM.R_SHOULDER) + d(LM.L_HIP, LM.R_HIP)) / 2 / trunk;
-}
-
-/** Below this spread the body is side-on to the phone: the phone is in front. */
-export const FRONT_SPREAD = 0.42;
-/** Above this spread the chest faces the phone: the phone is at the side. In between, no change. */
-export const SIDE_SPREAD = 0.55;
-
-/**
- * The camera view the picture shows, or undefined when it is not clear. The width of the
- * shoulders and hips across the picture is used, because it is measured far more surely than
- * their depth (which detectView uses when the picture cannot be read).
- */
-export function viewFromPicture(lm: number[] | undefined, aspect?: number | null): CameraView | undefined {
-  const s = pictureSpread(lm, aspect);
-  if (s === undefined) return undefined;
-  return s < FRONT_SPREAD ? 'front' : s > SIDE_SPREAD ? 'side' : undefined;
-}
-
-/**
- * Feet in line, read from the picture, for a batter seen side-on (phone at the bowler's end).
- * From there the toes point across the picture, so "one foot ahead of the other in the direction
- * of the toes" is a distance across the picture, which the picture measures exactly. Same units
- * as feetInLine (shoulder widths; positive: the front foot is ahead). The shoulder width is taken
- * from the length of the legs in the picture (SHOULDER_PER_LEG), because the shoulders themselves
- * overlap from this side. Undefined when the feet are not clearly seen or the toes point at the phone.
- */
-export function feetInLinePicture(lm: number[] | undefined, hand: Hand, aspect?: number | null): number | undefined {
-  if (!lm) return undefined;
-  for (const j of [LM.L_HEEL, LM.R_HEEL, LM.L_TOE, LM.R_TOE, LM.L_ANKLE, LM.R_ANKLE, LM.L_HIP, LM.R_HIP, LM.L_KNEE, LM.R_KNEE]) {
-    if (visibility(lm, j) < 0.6) return undefined;
-  }
-  const ar = aspect && aspect > 0 ? aspect : 0.75;
-  const pt = (j: number): [number, number] => [lm[j * 4] * ar, lm[j * 4 + 1]];
-  const d = (a: number, b: number) => Math.hypot(pt(a)[0] - pt(b)[0], pt(a)[1] - pt(b)[1]);
-  const leg = (d(LM.L_HIP, LM.L_KNEE) + d(LM.L_KNEE, LM.L_ANKLE) + d(LM.R_HIP, LM.R_KNEE) + d(LM.R_KNEE, LM.R_ANKLE)) / 2;
-  const width = SHOULDER_PER_LEG * leg;
-  if (width < 0.02) return undefined;
-  // Which way the toes point across the picture: both feet together.
-  const toeX = pt(LM.L_TOE)[0] - pt(LM.L_HEEL)[0] + pt(LM.R_TOE)[0] - pt(LM.R_HEEL)[0];
-  // Feet pointing at the phone look short: the direction cannot be read (the toes check says so).
-  if (Math.abs(toeX) < 0.25 * width) return undefined;
-  const s = sides(hand);
-  return (Math.sign(toeX) * (pt(s.frontAnkle)[0] - pt(s.backAnkle)[0])) / width;
 }
 
 /**
@@ -718,10 +581,7 @@ export function measureDefence(world: number[], hand: Hand, lm?: number[], view:
     frontKnee: jointAngle(p(s.frontHip), frontKnee, front),
     ...(neck === undefined ? {} : { headDown: neck }),
     leanIn: angleBetween(trunk, up),
-    // From the bowler's end the back leg is behind the front leg: judged only when it is seen.
-    ...(view === 'front' && lm && [s.backHip, s.backKnee, s.backAnkle].some((j) => visibility(lm, j) < MIN_VISIBILITY)
-      ? {}
-      : { backLeg: jointAngle(p(s.backHip), p(s.backKnee), back) }),
+    backLeg: jointAngle(p(s.backHip), p(s.backKnee), back),
     ...(along === undefined ? {} : { headOver: along }),
     // How far the hands are from the front knee, seen from above.
     batPad: flat(wristMid, frontKnee) / shoulderWidth,
@@ -786,8 +646,8 @@ export function measureDrive(world: number[], hand: Hand, lm?: number[], view: C
   return {
     stride: base.stride,
     frontKnee: base.frontKnee,
-    ...(base.backLeg === undefined ? {} : { backLeg: base.backLeg }),
-    ...(base.headOver === undefined ? {} : { headOver: base.headOver }),
+    backLeg: base.backLeg,
+    headOver: base.headOver,
     // Hands above the shoulders, as a share of the trunk length (y points down).
     finish: (shoulderMid[1] - wristMid[1]) / trunk,
     // Front elbow above the front shoulder, in metres.
@@ -817,7 +677,7 @@ export function measureShot(world: number[], hand: Hand, lm?: number[], view: Ca
     // light and the back knee is a little bent.
     shortStep: base.stride,
     frontLight: base.frontKnee,
-    ...(base.backLeg === undefined ? {} : { backKnee: base.backLeg }),
+    backKnee: base.backLeg,
     // The sweep: how deep the front knee bends, and how low the hips sit, as hips-to-ankles
     // height over the length of the trunk (about 1.7 standing, 1.0 in a deep sweep).
     sweepKnee: base.frontKnee,
@@ -1025,53 +885,28 @@ export function scoreStance(measures: Measures, hand: Hand = 'right') {
 }
 
 /** Measures that are only taken when the body part is clearly seen. */
-const SOMETIMES_MEASURED: CheckId[] = ['feetLine', 'neck', 'look', 'head', 'hands', 'handsIn', 'toesSide', 'headOver', 'headDown', 'backLeg', 'backKnee', 'weightBack'];
+const SOMETIMES_MEASURED: CheckId[] = ['feetLine', 'neck', 'look', 'head', 'hands', 'handsIn', 'toesSide', 'headOver', 'headDown'];
 
 /** Frames (about 15 a second) a bat found a moment ago is kept after it is lost. */
 export const BAT_KEEP_FRAMES = 5;
-/** The same, in milliseconds, used when the frames carry their time (newer phones give 40 to 60 frames a second). */
-export const BAT_KEEP_MS = 350;
-
-/**
- * The smoothing was tuned when the camera page gave about 15 frames a second. Newer phones give
- * 40 to 60 (field test, 19 October 2026: 48 to 60), so a fixed share per frame smoothed over a
- * quarter of the time and the score jumped from frame to frame (97, 58, 5, 84 within a second).
- * The share is now worked out from the time since the last frame, so the smoothing lasts the
- * same time at any frame rate.
- */
-export const SMOOTH_REF_MS = 1000 / 15;
-
-/**
- * The trained model's probabilities are smoothed more slowly than the measures (its verdict on
- * one frame is less sure than a joint angle), with this share per frame at 15 frames a second.
- */
-export const MODEL_ALPHA = 0.2;
-
-/**
- * Once the model has accepted a position, it stays accepted until the probability of "correct"
- * falls this far below the model's threshold. Without this, a probability near the threshold
- * flipped the verdict many times a second and the hold bar never filled.
- */
-export const MODEL_KEEP_MARGIN = 0.1;
-
-/**
- * The camera view must look different from the one in use for this long before it is changed
- * (field test, 19 October 2026: from the bowler's end, the view was worked out again on every
- * frame from the depth of the shoulders and hips, flipped between "front" and "side", and the
- * checks and tips changed with it).
- */
-export const VIEW_SWITCH_MS = 1000;
-
-/** Share of a step per frame for a step tuned at 15 frames a second, after dt milliseconds. */
-function stepFor(alpha: number, dt: number | undefined): number {
-  if (dt === undefined || !(dt > 0) || dt > 500) return alpha;
-  return 1 - Math.pow(1 - alpha, dt / SMOOTH_REF_MS);
-}
 
 /**
  * Smooths the measures between frames so the feedback does not flicker.
  * Uses an exponential moving average; a higher alpha reacts faster.
  */
+/**
+ * Smoothing over TIME, not over frames. Field test (19 October 2026, phone in front): the camera
+ * page now runs at 40 to 60 frames a second, and the old per-frame smoothing (35 % of each new
+ * frame) then followed every shake within about 50 ms, so the score jumped 22, 11, 91, 100, 29 on
+ * a stance that did not change. The weights are now set from the time between frames: a measure
+ * follows a real change in about a quarter of a second, the model's probabilities in about half a
+ * second, whatever the frame rate.
+ */
+export const MEASURE_TAU_MS = 250;
+export const PROBS_TAU_MS = 550;
+/** The model's "good" verdict, once given, is kept until P(correct) drops this far below the threshold. */
+export const MODEL_HYSTERESIS = 0.12;
+
 export class StanceSmoother {
   private values: Measures = {};
   private alpha: number;
@@ -1079,67 +914,41 @@ export class StanceSmoother {
     this.alpha = alpha;
   }
 
-  /** Time of the latest frame (ms), and the time since the one before it. */
-  private lastT: number | undefined;
-  private dt: number | undefined;
-  /** Called once per frame with the frame's time, before the measures are pushed. */
-  tick(t: number | undefined) {
-    if (t === undefined || !Number.isFinite(t)) {
-      this.dt = undefined;
-      return;
-    }
-    this.dt = this.lastT === undefined ? undefined : t - this.lastT;
-    this.lastT = t;
+  /** Weight of a new value: from the time since the last one when known, else the fixed alpha. */
+  private weight(lastT: number | null, t: number | undefined, tau: number): number {
+    if (t === undefined || lastT === null || t <= lastT) return this.alpha;
+    const dt = Math.min(500, t - lastT);
+    return 1 - Math.exp(-dt / tau);
   }
 
   private probs: number[] | null = null;
-  /** Smooths the trained model's class probabilities the same way, so its verdict does not flicker. */
-  pushProbs(next: number[]): number[] {
-    const a = stepFor(MODEL_ALPHA, this.dt);
-    if (!this.probs || this.probs.length !== next.length) this.probs = next.slice();
-    else this.probs = this.probs.map((p, i) => p + a * (next[i] - p));
+  private probsT: number | null = null;
+  /** The model's last verdict (true = good), for the hysteresis in judgeWithModel. */
+  modelGood = false;
+  /** Smooths the trained model's class probabilities, so its verdict does not flicker. */
+  pushProbs(next: number[], t?: number): number[] {
+    if (!this.probs || this.probs.length !== next.length || (t !== undefined && this.probsT !== null && t - this.probsT > 1500)) {
+      this.probs = next.slice();
+      this.modelGood = false;
+    } else {
+      const a = this.weight(this.probsT, t, PROBS_TAU_MS);
+      this.probs = this.probs.map((p, i) => p + a * (next[i] - p));
+    }
+    if (t !== undefined) this.probsT = t;
     return this.probs.slice();
   }
 
-  /** Whether the model accepted the position on the previous frame (for MODEL_KEEP_MARGIN). */
-  modelGood = false;
-
-  private viewNow: CameraView | null = null;
-  private otherSince = 0;
-  /**
-   * The camera view to judge this frame with. It starts as the place the learner chose in the
-   * set-up (or what the body shows, when nothing was chosen) and changes only when the picture
-   * has shown the other view for VIEW_SWITCH_MS.
-   */
-  settleView(chosen: CameraView | undefined, seen: CameraView | undefined, fallback: CameraView, t: number | undefined): CameraView {
-    if (!this.viewNow) this.viewNow = chosen ?? seen ?? fallback;
-    // A frame the picture cannot place (the trunk half hidden, or a body half turned) neither
-    // counts towards a change nor starts the count again.
-    if (!seen || t === undefined) return this.viewNow;
-    if (seen === this.viewNow) {
-      this.otherSince = 0;
-      return this.viewNow;
-    }
-    if (!this.otherSince) this.otherSince = t;
-    if (t - this.otherSince >= VIEW_SWITCH_MS) {
-      this.viewNow = seen;
-      this.otherSince = 0;
-      // The measures of the old view are not comparable with the new one.
-      this.values = {};
-      this.probs = null;
-      this.modelGood = false;
-    }
-    return this.viewNow;
-  }
-
-  push(next: Measures): Measures {
-    const a = stepFor(this.alpha, this.dt);
+  private valuesT: number | null = null;
+  push(next: Measures, t?: number): Measures {
+    const a = this.weight(this.valuesT, t, MEASURE_TAU_MS);
+    if (t !== undefined && this.valuesT !== null && t - this.valuesT > 1500) this.values = {};
     for (const key of Object.keys(next) as CheckId[]) {
       const v = next[key];
       if (v === undefined || Number.isNaN(v)) continue;
       const prev = this.values[key];
       this.values[key] = prev === undefined ? v : prev + a * (v - prev);
     }
+    if (t !== undefined) this.valuesT = t;
     return { ...this.values };
   }
 
@@ -1149,22 +958,17 @@ export class StanceSmoother {
   }
 
   private missed = 0;
-  private missedMs = 0;
   /**
    * The bat was not found in this frame. A bat found a moment ago is kept for a few frames (the
    * camera page looks for it on every other frame, and a single missed frame should not reset a
-   * held stance); after that it is dropped. With the frame times known, it is kept for
-   * BAT_KEEP_MS whatever the frame rate.
+   * held stance); after that it is dropped.
    */
   missBat(ids: CheckId[], keepFrames = BAT_KEEP_FRAMES) {
     this.missed++;
-    const timed = this.dt !== undefined && this.dt > 0 && this.dt <= 500;
-    if (timed) this.missedMs += this.dt!;
-    if (timed ? this.missedMs > BAT_KEEP_MS : this.missed > keepFrames) this.forget(ids);
+    if (this.missed > keepFrames) this.forget(ids);
   }
   sawBat() {
     this.missed = 0;
-    this.missedMs = 0;
   }
   /** The latest smoothed value of a measure, if any. */
   value(id: CheckId): number | undefined {
@@ -1174,10 +978,10 @@ export class StanceSmoother {
   reset() {
     this.values = {};
     this.missed = 0;
-    this.missedMs = 0;
     this.probs = null;
+    this.probsT = null;
+    this.valuesT = null;
     this.modelGood = false;
-    // The camera view is kept: the phone has not moved.
   }
 }
 
@@ -1213,14 +1017,7 @@ export function analyzePose(skill: Skill, frame: PoseFrame, hand: Hand, smoother
   // The phone may be in front or at the side; which one is worked out from the body (detectView),
   // so both work whatever was chosen in the set-up. Only a learner with their back to a phone at
   // the side cannot be judged.
-  // The camera view: the place chosen in the set-up, changed only when the picture has clearly
-  // shown the other view for a second (StanceSmoother.settleView). Without a smoother (one frame
-  // on its own), what the picture shows, else the place chosen, else the depth of the body.
-  smoother?.tick(frame.t);
-  const seenView = viewFromPicture(frame.lm, frame.aspect);
-  const view = smoother
-    ? smoother.settleView(options.view, seenView, detectView(frame.world), frame.t)
-    : seenView ?? options.view ?? detectView(frame.world);
+  const view = detectView(frame.world);
   const trunkSeen = [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP].some((j) => visibility(frame.lm, j) >= MIN_VISIBILITY);
   if (trunkSeen && view === 'side') {
     const problem = cameraProblem(frame.world, 'side');
@@ -1266,50 +1063,28 @@ export function analyzePose(skill: Skill, frame: PoseFrame, hand: Hand, smoother
   // Measures that could not be taken in this frame (a hidden wrist, the toes cut off) are
   // dropped, so an old value is not judged again.
   if (smoother) smoother.forget(SOMETIMES_MEASURED.filter((id) => raw[id] === undefined));
-  // The width of the feet is a tip from the bowler's end (see DEPTH_TIPS): it is still measured.
-  const measures = smoother ? smoother.push(raw) : raw;
+  const measures = smoother ? smoother.push(raw, frame.t) : raw;
   const chosen = options.only ? options.only.map((id) => BENCHMARK_BY_ID[id]).filter(Boolean) : BENCHMARKS_BY_SKILL[skill];
   // With the phone in front, knee bend and lean come from depth, the least exact thing the pose
   // model gives (field test, 12 October 2026: a correct shot was told "Bend your front knee"). In
   // the defence they are tips there, not faults.
-  // In the stance seen from the bowler's end the feet stand one behind the other along the line to
-  // the phone, so their width is depth, and the shoulder line points at the phone too: the width
-  // of the feet and the level of the shoulders are tips there (field test, 19 October 2026: "Move
-  // your feet a little wider" came and went with feet a good width apart). "Feet in line", the
-  // knees and the lean lie across the picture and are read from it (measureStance), so they count.
-  // In the shots, the bend of the front and back knees points along the line to the phone too, so
-  // from the bowler's end they are tips (and the back leg is often hidden behind the front leg).
-  const DEPTH_TIPS: Partial<Record<Skill, CheckId[]>> = {
-    stance: ['feet', 'shoulders'],
-    defence: ['frontKnee', 'leanIn', 'backLeg'],
-    drive: ['frontKnee', 'backLeg'],
-    backdefence: ['frontLight', 'backKnee'],
-    pull: ['frontLight', 'backKnee'],
-    cut: ['frontLight', 'backKnee'],
-    sweep: ['sweepKnee'],
-  };
+  // The same holds for the stance seen from the front (field test, 18 October 2026: from the
+  // bowler's end the stance check never passed, so the shot never started): the width of the feet
+  // and the lean run along the line to the phone, so they are tips there.
+  const DEPTH_TIPS: Partial<Record<Skill, CheckId[]>> = { defence: ['frontKnee', 'leanIn'], stance: ['feet', 'lean'] };
   const tips = view === 'front' ? DEPTH_TIPS[skill] ?? [] : [];
   const benchmarks = tips.length ? chosen.map((b) => (tips.includes(b.id) ? { ...b, advisory: true } : b)) : chosen;
   const result = scoreChecks(benchmarks, measures, hand);
   const refined = refineMessages(result, benchmarks, frame, hand, view, batSeen ? frame.bat! : null, options.requireBat ?? false);
   const model = options.only ? null : options.model === undefined ? modelFor(skill) : options.model;
-  if (!model) return { ...refined, view };
+  if (!model) return refined;
   const rawProbs = classifyFrame(model, frame.world, frame.lm, hand, frame.aspect);
-  const probs = smoother ? smoother.pushProbs(rawProbs) : rawProbs;
-  const judged = judgeWithModel(refined, benchmarks, model, predictionFrom(model, probs), hand, smoother?.modelGood ?? false, view === 'front' ? MODEL_FRONT_VETO : undefined);
-  if (smoother) smoother.modelGood = judged.modelAccepted;
-  const { modelAccepted: _accepted, ...out } = judged;
-  void _accepted;
-  return { ...out, view };
+  const probs = smoother ? smoother.pushProbs(rawProbs, frame.t) : rawProbs;
+  const front = options.view === 'front' || view === 'front';
+  const judged = judgeWithModel(refined, benchmarks, model, predictionFrom(model, probs), hand, { front, wasGood: smoother?.modelGood ?? false });
+  if (smoother) smoother.modelGood = judged.model?.good ?? false;
+  return judged;
 }
-
-/**
- * Phone at the bowler's end: the trained model overrules rules that accept a position only when
- * it is confident of a fault (probability of "correct" below this). Its reliability from there has
- * not been measured separately (training notebook, section 9b), and in a field test (19 October
- * 2026) its probability for a close-up batter from the front hovered around the threshold.
- */
-export const MODEL_FRONT_VETO = 0.3;
 
 /** Probability of the correct class at or above which a position is good, unless the model file says otherwise. */
 export const MODEL_GOOD_PROB = 0.6;
@@ -1326,41 +1101,49 @@ export const MODEL_GOOD_PROB = 0.6;
  *    reject (score below GOOD_SCORE or a poor check) does not count, and the rule's correction is
  *    spoken. A "nearly" (fair) check never blocks, as without a model.
  */
+/**
+ * Phone in front (where the bowler would be): the batter stands side-on, so the line of the
+ * shoulders and hips points at the phone and is measured from depth, the least exact thing the
+ * pose model gives. The model's features depend on that line, and the field test (19 October 2026)
+ * showed the model calling a good stance a fault (scores 4 to 18) and back again. From the front
+ * the model therefore stops a position only when it is fairly sure of a fault (P(correct) below
+ * FRONT_VETO), and the score is the mean of the model's and the rules' scores. From the side the
+ * model decides as before. Record front-view clips and train again to make the front as reliable.
+ */
+export const FRONT_VETO = 0.35;
+
 export function judgeWithModel(
   result: Extract<PoseAnalysis, { state: 'ok' }>,
   benchmarks: Benchmark[],
   model: PositionModel,
   pred: ModelPrediction,
   hand: Hand,
-  wasGood = false,
-  vetoBelow?: number,
-): Extract<PoseAnalysis, { state: 'ok' }> & { modelAccepted: boolean } {
+  opts: { front?: boolean; wasGood?: boolean } = {},
+): Extract<PoseAnalysis, { state: 'ok' }> {
   const goodProb = model.good_prob ?? MODEL_GOOD_PROB;
-  // A position the model accepted on the last frame stays accepted until the probability falls
-  // MODEL_KEEP_MARGIN below the threshold (and the model still names the correct class or is
-  // within the margin), so a probability near the threshold does not flip the verdict.
-  const sure = wasGood
-    ? pred.pCorrect >= goodProb - MODEL_KEEP_MARGIN
-    : pred.label === model.correct_class && pred.pCorrect >= goodProb;
+  // Hysteresis: a position the model already accepts stays accepted until P(correct) falls a
+  // little below the threshold, so a value hovering at the threshold does not flicker.
+  const keep = opts.wasGood ? MODEL_HYSTERESIS : 0;
+  const good = opts.front
+    ? pred.pCorrect >= FRONT_VETO - keep
+    : (pred.label === model.correct_class || opts.wasGood === true) && pred.pCorrect >= goodProb - keep;
+  const modelScore0 = Math.round(
+    pred.pCorrect >= goodProb ? GOOD_SCORE + ((100 - GOOD_SCORE) * (pred.pCorrect - goodProb)) / Math.max(1e-6, 1 - goodProb) : (GOOD_SCORE * pred.pCorrect) / goodProb,
+  );
+  const modelScore = opts.front ? Math.round((modelScore0 + result.score) / 2) : modelScore0;
   // Both must accept: the rules' own verdict on this frame.
   const rulesGood = isGoodPosition(result);
-  // vetoBelow (phone at the bowler's end): the model's reliability from there has not been
-  // measured, so an unsure "fault" (probability of correct between vetoBelow and the threshold)
-  // does not overrule rules that accept the position; only a confident fault does.
-  const unsure = !sure && vetoBelow !== undefined && rulesGood && pred.pCorrect >= vetoBelow;
-  const good = sure || unsure;
-  const modelScore = unsure
-    ? result.score
-    : good
-      ? Math.round(Math.max(GOOD_SCORE, GOOD_SCORE + ((100 - GOOD_SCORE) * (pred.pCorrect - goodProb)) / Math.max(1e-6, 1 - goodProb)))
-      : Math.round(Math.min(GOOD_SCORE - 1, (GOOD_SCORE * pred.pCorrect) / goodProb));
-  const score = good && !rulesGood ? Math.min(modelScore, result.score, GOOD_SCORE - 1) : modelScore;
+  const score = !good
+    ? Math.min(modelScore, GOOD_SCORE - 1)
+    : !rulesGood
+      ? Math.min(modelScore, result.score, GOOD_SCORE - 1)
+      : Math.max(modelScore, GOOD_SCORE);
   let checks = result.checks;
   let list = benchmarks;
   if (good) {
     // The model accepts; the rule checks are left as they are, so a poor check still blocks.
-  } else if (pred.label !== model.correct_class) {
-    const link = model.faults?.[pred.label];
+  } else {
+    const link = pred.label !== model.correct_class ? model.faults?.[pred.label] : undefined;
     // A fault with no link (the faults merged into one class, "fault"): the rule check that is
     // furthest from its coaching range says what to change.
     const worst = link ? undefined : checks.filter((c) => c.value !== null && !c.advisory && !c.required).sort((x, y) => x.score - y.score)[0];
@@ -1382,7 +1165,7 @@ export function judgeWithModel(
   const summary = summarise(list, checks);
   // The model's fault is said first, whatever the rule scores say.
   const cues = [...summary.cues.filter((c) => c.byModel), ...summary.cues.filter((c) => !c.byModel)];
-  return { ...summary, cues, score, model: { ...pred, classes: model.classes, ...(unsure ? { unsure: true } : {}) }, modelAccepted: sure };
+  return { ...summary, cues, score, model: { ...pred, classes: model.classes, good, front: !!opts.front } };
 }
 
 /**
@@ -1414,6 +1197,10 @@ function refineMessages(
         }
         if (!requireBat) return c;
         changed = true;
+        // Phone in front: in a side-on stance the bat often hangs behind the front leg, out of
+        // the phone's sight (field test, 19 October 2026: "I cannot see your bat" on most frames of
+        // a good stance). From the front it is a tip, not a fault that stops the stance.
+        if (view === 'front') return { ...c, status: 'fair' as Status, score: FAIR_SCORE, required: true, advisory: true, message: personalise(BAT_NOT_SEEN_MESSAGE, hand) };
         return { ...c, status: 'poor' as Status, score: 0, required: true, message: personalise(BAT_NOT_SEEN_MESSAGE, hand) };
       }
       if (c.message && bat) {

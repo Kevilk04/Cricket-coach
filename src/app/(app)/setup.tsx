@@ -14,13 +14,14 @@ import { DRILL_BY_ID, isDrill, taskKey } from '@/data/training';
 import type { CameraView } from '@/lib/pose/stanceAnalyzer';
 import { getCameraView, getWithBat, setCameraView, setWithBat } from '@/services/flags';
 import { useProfile } from '@/state/AuthContext';
+import { StanceFirst } from '@/components/StanceFirst';
 import { useData } from '@/state/DataContext';
 import { C, F, sp } from '@/theme';
 
-
+/** Where to put the phone and where to stand, shown before every camera practice. */
 export default function Setup() {
   const params = useLocalSearchParams<{ skill: string; drill?: string }>();
-
+  // The grip is not practised with the camera, so it has no setup.
   const skill = (CAMERA_SKILLS as string[]).includes(params.skill) ? (params.skill as Skill) : null;
   const profile = useProfile();
   const hand = profile.battingHand;
@@ -71,7 +72,14 @@ export default function Setup() {
     return (
       <Screen>
         <TopBar title={info.name} />
-        <Notice icon="lock-closed">Practice goes in order. Pass the step before this one to open it.</Notice>
+        {skills[skill].needsStance ? (
+          <>
+            <Notice icon="lock-closed">The stance comes first.</Notice>
+            <StanceFirst />
+          </>
+        ) : (
+          <Notice icon="lock-closed">Practice goes in order. Pass the step before this one to open it.</Notice>
+        )}
         <Button title="Back to practice" onPress={() => router.replace('/practice')} />
       </Screen>
     );
@@ -186,7 +194,7 @@ const PHONE_FRONT = [
   'Pick a straight line for your pitch, at least 5 metres long.',
   'Stand the phone upright at one end, about waist high: lean it on a chair, a box or a bag, with the back camera or the screen facing you.',
   'Walk 3 to 4 metres away from it (5 big steps). That is your crease. The phone is now your bowler.',
-  'Stand side-on: your {front} shoulder points at the phone, your {front} foot a little nearer the phone than your {back} foot, about shoulder-width apart, toes pointing to the side.',
+  'Stand side-on: your {front} shoulder points at the phone, your feet are side by side across the line.',
   'Check the picture shows you from your head to your feet, with a little space above and below. Move back if it does not.',
   'Turn the sound up and switch silent mode off. You do not need to look at the screen: the voice tells you what to fix and counts each good one.',
 ];

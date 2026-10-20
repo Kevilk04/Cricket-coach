@@ -42,8 +42,11 @@ export const DEFAULT_POSE_ASSETS: PoseAssets = {
   visionBase: process.env.EXPO_PUBLIC_POSE_VISION_BASE || `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VISION_VERSION}`,
   modelUrl:
     process.env.EXPO_PUBLIC_POSE_MODEL_URL ||
-    'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+    'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task',
 };
+// The "full" pose model, not "lite" (field test, 19 October 2026: with the phone in front the lite
+// model's joints shook and the left and right legs swapped, so the trained model's verdict jumped).
+// Train with the same model: the notebook's POSE_MODEL setting is 'full' too.
 
 export type PoseFacing = 'front' | 'back';
 
@@ -330,10 +333,6 @@ ${BAT_DETECT_SOURCE}
       var p = lms[i], w = world[i];
       var vis = p.visibility || 0;
       visF[i] = visF[i] === null ? vis : visF[i] + 0.35 * (vis - visF[i]);
-      // A joint the model is unsure of (the far leg or arm of a side-on body) shakes the most, so
-      // it is smoothed more strongly; a clearly seen joint keeps the normal, quicker response.
-      var calm = visF[i] < 0.6 ? 0.35 : 1;
-      for (var kk = 0; kk < 3; kk++) { imgF[i][kk].mc = S.imageMinCutoff * calm; wldF[i][kk].mc = S.worldMinCutoff * calm; }
       outL[i] = { x: imgF[i][0].f(p.x, dt), y: imgF[i][1].f(p.y, dt), z: imgF[i][2].f(p.z, dt), visibility: visF[i] };
       outW[i] = { x: wldF[i][0].f(w.x, dt), y: wldF[i][1].f(w.y, dt), z: wldF[i][2].f(w.z, dt) };
     }
@@ -537,14 +536,13 @@ ${BAT_DETECT_SOURCE}
     g.strokeStyle = base;
     for (var i = 0; i < BONES.length; i++) {
       var a = lms[BONES[i][0]], b = lms[BONES[i][1]];
-      // Poorly seen joints (the far side of a side-on body) are not drawn, so the skeleton does not jump about.
-      if (!a || !b || a.visibility < 0.55 || b.visibility < 0.55) continue;
+      if (!a || !b || a.visibility < 0.4 || b.visibility < 0.4) continue;
       var pa = map(a.x, a.y), pb = map(b.x, b.y);
       g.beginPath(); g.moveTo(pa[0], pa[1]); g.lineTo(pb[0], pb[1]); g.stroke();
     }
     for (var j = 0; j < JOINTS.length; j++) {
       var k = JOINTS[j], p = lms[k];
-      if (!p || p.visibility < 0.55) continue;
+      if (!p || p.visibility < 0.4) continue;
       var pp = map(p.x, p.y);
       var bad = highlights.indexOf(k) >= 0;
       g.beginPath();
@@ -649,7 +647,7 @@ ${BAT_DETECT_SOURCE}
     }
     return navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: { facingMode: facing === 'front' ? 'user' : 'environment', width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } }
+      video: { facingMode: facing === 'front' ? 'user' : 'environment', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
     }).then(function (s) {
       stream = s;
       video.srcObject = s;
